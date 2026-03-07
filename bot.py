@@ -8,7 +8,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils import executor
 
-TOKEN = "8732486507:AAEPoTLWIpDIcYBNhKAAhTyiwe679wfq8sw"
+TOKEN = "BOT_TOKEN"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
@@ -23,6 +23,7 @@ edit_sessions = {}
 # ---------- АДМИН ПАНЕЛЬ ----------
 
 admin_add_address = {}
+admin_delete_address = {}
 admin_add_admin = {}
 
 os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -148,6 +149,10 @@ async def admin_panel(message: types.Message):
     )
 
     keyboard.add(
+    InlineKeyboardButton("🗑 Удалить адрес", callback_data="admin_delete_address")
+    )
+
+    keyboard.add(
         InlineKeyboardButton("👤 Добавить админа", callback_data="admin_add_admin")
     )
 
@@ -166,6 +171,20 @@ async def admin_add_addr(callback: types.CallbackQuery):
     await bot.send_message(
         callback.from_user.id,
         "Введите адрес\n\nФормат:\nГород|улица дом\n\nПример:\nКалуга|Солнечный 18"
+    )
+
+
+@dp.callback_query_handler(lambda c: c.data=="admin_delete_address")
+async def admin_delete_addr(callback: types.CallbackQuery):
+
+    if not is_admin(callback.from_user.id):
+        return
+
+    admin_delete_address[callback.from_user.id] = True
+
+    await bot.send_message(
+        callback.from_user.id,
+        "Введите адрес для удаления\n\nПример:\nСолнечный 18"
     )
 
 
@@ -368,6 +387,8 @@ async def edit_menu(callback: types.CallbackQuery):
     await callback.message.answer("Что изменить?",reply_markup=keyboard)
 
 
+
+
 # ---------- РЕДАКТИРОВАНИЕ ----------
 
 @dp.callback_query_handler(lambda c: c.data.startswith("editbox|"))
@@ -395,6 +416,29 @@ async def edit_cross(callback: types.CallbackQuery):
     edit_sessions[callback.from_user.id]=("cross",house_id)
 
     await bot.send_message(callback.from_user.id,"Введите новый Кросс/патч")
+
+
+# ---------- УДАЛЕНИЕ АДРЕСА (АДМИН) ----------
+
+@dp.callback_query_handler(lambda c: c.data.startswith("admin_delete_confirm|"))
+async def admin_delete_confirm(callback: types.CallbackQuery):
+
+    if not is_admin(callback.from_user.id):
+        return
+
+    house_id = callback.data.split("|")[1]
+
+    conn = db()
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM addresses WHERE id=?", (house_id,))
+    cursor.execute("DELETE FROM history WHERE address_id=?", (house_id,))
+    cursor.execute("DELETE FROM locks WHERE address_id=?", (house_id,))
+
+    conn.commit()
+    conn.close()
+
+    await callback.message.answer("🗑 Адрес удалён")
 
 
 # ---------- ОБРАБОТКА ВВОДА ----------
@@ -434,6 +478,46 @@ async def handle(message: types.Message):
         del admin_add_address[user_id]
         return
 
+
+# ---------- УДАЛЕНИЕ АДРЕСА ----------
+
+    if user_id in admin_delete_address:
+
+        conn = db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT id,address FROM addresses WHERE LOWER(address) LIKE ?",
+            (f"%{text.lower()}%",)
+        )
+
+        rows = cursor.fetchall()
+
+        if not rows:
+            await message.answer("Адрес не найден")
+            del admin_delete_address[user_id]
+            conn.close()
+            return
+
+        keyboard = InlineKeyboardMarkup()
+
+        for r in rows:
+            keyboard.add(
+                InlineKeyboardButton(
+                    f"Удалить {r[1]}",
+                    callback_data=f"admin_delete_confirm|{r[0]}"
+                )
+            )
+
+        await message.answer(
+            "Выберите адрес для удаления:",
+            reply_markup=keyboard
+        )
+
+        conn.close()
+        del admin_delete_address[user_id]
+        return
+    
 
     # ---------- ДОБАВЛЕНИЕ АДМИНА ----------
 
@@ -543,6 +627,15 @@ async def handle(message: types.Message):
 
     await message.answer("Найдено несколько домов:",reply_markup=keyboard)
 
+
+# ---------- ОТКРЫТЬ ДОМ ----------
+
+@dp.callback_query_handler(lambda c: c.data.startswith("house|"))
+async def open_house(callback: types.CallbackQuery):
+
+    house_id = callback.data.split("|")[1]
+
+    await show_house(callback.message, house_id)
 
 # ---------- ИСТОРИЯ ----------
 
