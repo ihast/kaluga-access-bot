@@ -8,7 +8,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils import executor
 
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = "TOKEN = os.getenv("BOT_TOKEN")"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
@@ -25,6 +25,7 @@ edit_sessions = {}
 admin_add_address = {}
 admin_delete_address = {}
 admin_add_admin = {}
+admin_broadcast = {}
 
 os.makedirs(BACKUP_DIR, exist_ok=True)
 
@@ -157,6 +158,10 @@ async def admin_panel(message: types.Message):
     )
 
     keyboard.add(
+    InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")
+    )
+
+    keyboard.add(
         InlineKeyboardButton("📜 Логи", callback_data="admin_logs")
     )
 
@@ -198,6 +203,19 @@ async def admin_add_admin_btn(callback: types.CallbackQuery):
         "Введите Telegram ID нового админа"
     )
 
+
+@dp.callback_query_handler(lambda c: c.data=="admin_broadcast")
+async def admin_broadcast_start(callback: types.CallbackQuery):
+
+    if not is_admin(callback.from_user.id):
+        return
+
+    admin_broadcast[callback.from_user.id] = True
+
+    await bot.send_message(
+        callback.from_user.id,
+        "Введите сообщение для рассылки"
+    )
 
 @dp.callback_query_handler(lambda c: c.data=="admin_logs")
 async def admin_logs(callback: types.CallbackQuery):
@@ -248,6 +266,7 @@ async def choose_city(message: types.Message):
     user_city[message.from_user.id] = message.text
 
     await message.answer(f"📍 Город выбран: {message.text}\n\nВведите улицу и номер дома")
+
 
 
 # ---------- ПОИСК ----------
@@ -431,6 +450,9 @@ async def admin_delete_confirm(callback: types.CallbackQuery):
     conn = db()
     cursor = conn.cursor()
 
+    cursor.execute("SELECT address FROM addresses WHERE id=?", (house_id,))
+    addr = cursor.fetchone()
+
     cursor.execute("DELETE FROM addresses WHERE id=?", (house_id,))
     cursor.execute("DELETE FROM history WHERE address_id=?", (house_id,))
     cursor.execute("DELETE FROM locks WHERE address_id=?", (house_id,))
@@ -438,7 +460,7 @@ async def admin_delete_confirm(callback: types.CallbackQuery):
     conn.commit()
     conn.close()
 
-    await callback.message.answer("🗑 Адрес удалён")
+    await callback.message.answer(f"🗑 Адрес удалён:\n{addr[0]}")
 
 
 # ---------- ОБРАБОТКА ВВОДА ----------
@@ -448,6 +470,32 @@ async def handle(message: types.Message):
 
     user_id = message.from_user.id
     text = message.text.strip()
+
+    # ---------- РАССЫЛКА ----------
+
+    if user_id in admin_broadcast:
+
+        conn = db()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT DISTINCT updated_by_id FROM addresses WHERE updated_by_id IS NOT NULL")
+
+        users = cursor.fetchall()
+        conn.close()
+
+        sent = 0
+
+        for u in users:
+            try:
+                await bot.send_message(u[0], text)
+                sent += 1
+            except:
+                pass
+
+        await message.answer(f"📢 Рассылка отправлена {sent} пользователям")
+
+        del admin_broadcast[user_id]
+        return
 
     # ---------- ДОБАВЛЕНИЕ АДРЕСА ----------
 
@@ -479,24 +527,25 @@ async def handle(message: types.Message):
         return
 
 
-# ---------- УДАЛЕНИЕ АДРЕСА ----------
+    # ---------- УДАЛЕНИЕ АДРЕСА ----------
 
-    if user_id in admin_delete_address:
+    if user_id in admin_delete_address and is_admin(user_id):
 
         conn = db()
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT id,address FROM addresses WHERE LOWER(address) LIKE ?",
-            (f"%{text.lower()}%",)
+            "SELECT id,city,address FROM addresses WHERE address LIKE ?",
+            (f"%{text}%",)
         )
 
         rows = cursor.fetchall()
 
         if not rows:
             await message.answer("Адрес не найден")
-            del admin_delete_address[user_id]
             conn.close()
+
+            del admin_delete_address[user_id]   # ← сброс режима
             return
 
         keyboard = InlineKeyboardMarkup()
@@ -504,7 +553,7 @@ async def handle(message: types.Message):
         for r in rows:
             keyboard.add(
                 InlineKeyboardButton(
-                    f"Удалить {r[1]}",
+                    f"{r[1]} {r[2]}",
                     callback_data=f"admin_delete_confirm|{r[0]}"
                 )
             )
@@ -515,7 +564,8 @@ async def handle(message: types.Message):
         )
 
         conn.close()
-        del admin_delete_address[user_id]
+
+        del admin_delete_address[user_id]   # ← ВАЖНО
         return
     
 
